@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import subprocess
 import urllib.parse
 import urllib.request
@@ -38,6 +39,53 @@ with st.sidebar:
 # Input topic
 query = st.text_input("Enter a research topic:", placeholder="e.g., data science trends 2026")
 run_button = st.button("Run Deep Research", type="primary", use_container_width=True)
+
+def call_gemini_with_fallback(prompt, key, status_widget):
+    encoded_key = urllib.parse.quote(key)
+    # Model fallback hierarchy
+    candidate_models = [
+        "gemini-3.6-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro"
+    ]
+    
+    last_err = None
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    for model_name in candidate_models:
+        status_widget.info(f"Synthesizing research brief with {model_name}...")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={encoded_key}"
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST"
+        )
+        
+        # Try up to 2 attempts per model for transient 503 spikes
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    result_json = json.loads(resp.read().decode("utf-8"))
+                    return result_json["candidates"][0]["content"]["parts"][0]["text"]
+            except urllib.error.HTTPError as http_err:
+                err_msg = http_err.read().decode("utf-8")
+                last_err = f"({http_err.code}): {err_msg}"
+                if http_err.code in (503, 429):
+                    time.sleep(2)
+                    continue
+                break
+            except Exception as e:
+                last_err = str(e)
+                break
+
+    raise RuntimeError(f"All model synthesis attempts failed: {last_err}")
 
 def perform_research(topic, num_articles, key):
     key = key.strip()
@@ -107,8 +155,7 @@ def perform_research(topic, num_articles, key):
         reader_tab.close()
         browser.close()
     
-    # 3. Gemini Synthesis (Using recommended gemini-3.6-flash)
-    status_text.info("Synthesizing research brief with Gemini 3.6 Flash...")
+    # 3. Gemini Synthesis with Resilient Fallback
     raw_research = ""
     for i, note in enumerate(notes_vault, 1):
         raw_research += f"\nSource {i}: {note['title']} ({note['url']})\n{note['content']}\n---\n"
@@ -125,29 +172,7 @@ def perform_research(topic, num_articles, key):
     3. **Source Reliability & Trust Check**
     """
 
-    encoded_key = urllib.parse.quote(key)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={encoded_key}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    req = urllib.request.Request(
-        url, 
-        data=json.dumps(payload).encode("utf-8"), 
-        headers=headers, 
-        method="POST"
-    )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            result_json = json.loads(resp.read().decode("utf-8"))
-            report_md = result_json["candidates"][0]["content"]["parts"][0]["text"]
-    except urllib.error.HTTPError as http_err:
-        err_msg = http_err.read().decode("utf-8")
-        raise RuntimeError(f"Gemini API Error ({http_err.code}): {err_msg}")
+    report_md = call_gemini_with_fallback(prompt, key, status_text)
     
     # 4. Generate Styled HTML & PDF
     html_body = markdown.markdown(report_md, extensions=["tables", "fenced_code"])

@@ -1,0 +1,33 @@
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment Variables & Secrets
+.env
+*.env
+
+# Python Caches & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Streamlit Local Caches
+.streamlit/
+
+# Generated Research Artifacts
+final_research_report.md
+final_research_report.html
+final_research_report.pdf
+*.pdf
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor Settings
+.vscode/
+.idea/

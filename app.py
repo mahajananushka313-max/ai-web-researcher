@@ -1,9 +1,21 @@
 import os
+import sys
+import subprocess
 import streamlit as st
 import markdown
 from playwright.sync_api import sync_playwright
 from duckduckgo_search import DDGS
 import google.generativeai as genai
+
+# Auto-download Playwright Chromium browser binary on cloud deployment
+@st.cache_resource
+def ensure_playwright_browser():
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+    except Exception as e:
+        st.error(f"Browser installation failed: {e}")
+
+ensure_playwright_browser()
 
 # Page Configuration
 st.set_page_config(page_title="Autonomous AI Web Researcher", page_icon="🔍", layout="wide")
@@ -53,7 +65,10 @@ def perform_research(topic, num_articles, key):
     progress_bar = st.progress(0)
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
+        browser = p.chromium.launch(
+            headless=True, 
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         reader_tab = browser.new_page(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         )
@@ -115,7 +130,10 @@ def perform_research(topic, num_articles, key):
     
     pdf_path = "final_research_report.pdf"
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True, 
+            args=["--no-sandbox", "--disable-dev-shm-usage"]
+        )
         pdf_page = browser.new_page()
         pdf_page.set_content(styled_html, wait_until="load")
         pdf_page.pdf(path=pdf_path, format="A4", margin={"top": "15mm", "bottom": "15mm", "left": "15mm", "right": "15mm"})

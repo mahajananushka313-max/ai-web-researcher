@@ -107,8 +107,8 @@ def perform_research(topic, num_articles, key):
         reader_tab.close()
         browser.close()
     
-    # 3. Gemini Synthesis (Dynamic Model Resolution)
-    status_text.info("Resolving available Gemini model and synthesizing brief...")
+    # 3. Gemini Synthesis (Using recommended gemini-3.6-flash)
+    status_text.info("Synthesizing research brief with Gemini 3.6 Flash...")
     raw_research = ""
     for i, note in enumerate(notes_vault, 1):
         raw_research += f"\nSource {i}: {note['title']} ({note['url']})\n{note['content']}\n---\n"
@@ -126,32 +126,7 @@ def perform_research(topic, num_articles, key):
     """
 
     encoded_key = urllib.parse.quote(key)
-    
-    # Check available models on this project to avoid 404s
-    target_model_endpoint = "gemini-1.5-flash"
-    try:
-        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={encoded_key}"
-        list_req = urllib.request.Request(list_url, method="GET")
-        with urllib.request.urlopen(list_req, timeout=10) as resp:
-            models_data = json.loads(resp.read().decode("utf-8"))
-            available = [
-                m["name"].replace("models/", "") 
-                for m in models_data.get("models", []) 
-                if "generateContent" in m.get("supportedGenerationMethods", [])
-            ]
-            # Prioritize fast modern models that are confirmed available
-            for candidate in ["gemini-2.0-flash", "gemini-1.5-flash-002", "gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"]:
-                if candidate in available:
-                    target_model_endpoint = candidate
-                    break
-            else:
-                if available:
-                    target_model_endpoint = available[0]
-    except Exception:
-        target_model_endpoint = "gemini-1.5-flash"
-
-    # Execute Content Generation with resolved model
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model_endpoint}:generateContent?key={encoded_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={encoded_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
     }

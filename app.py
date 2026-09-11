@@ -1,13 +1,16 @@
 import os
 import sys
 import subprocess
+import urllib.parse
+import urllib.request
+import json
 import streamlit as st
 import markdown
 from playwright.sync_api import sync_playwright
 from duckduckgo_search import DDGS
 import google.generativeai as genai
 
-# Auto-download Playwright Chromium browser binary on cloud deployment
+# Auto-download Playwright Chromium binary on cloud deployment
 @st.cache_resource
 def ensure_playwright_browser():
     try:
@@ -42,23 +45,40 @@ def perform_research(topic, num_articles, key):
     status_text = st.empty()
     status_text.info(f"Querying search index for: '{topic}'...")
     
-    # 1. Fetch search results via direct API wrapper (bypasses bot challenges)
+    # 1. Fetch search results with backend fallback
     targets = []
-    try:
-        with DDGS() as ddgs:
-            raw_results = list(ddgs.text(topic, max_results=num_articles * 2))
-            for item in raw_results:
-                href = item.get("href")
-                title = item.get("title")
-                if href and href.startswith("http"):
-                    targets.append({"title": title, "url": href})
-                if len(targets) >= num_articles:
-                    break
-    except Exception as err:
-        raise RuntimeError(f"Search index error: {str(err)}")
+    for backend_mode in ["api", "html", "lite"]:
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(topic, max_results=num_articles * 2, backend=backend_mode))
+                for item in results:
+                    href = item.get("href")
+                    title = item.get("title")
+                    if href and href.startswith("http") and not any(skip in href for skip in ["duckduckgo.com", "bing.com"]):
+                        if not any(t["url"] == href for t in targets):
+                            targets.append({"title": title if title else href, "url": href})
+                    if len(targets) >= num_articles:
+                        break
+            if targets:
+                break
+        except Exception:
+            continue
+
+    # Fallback to direct encyclopedic search if engine blocks cloud hosting
+    if not targets:
+        try:
+            wiki_api = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(topic)}&limit={num_articles}&namespace=0&format=json"
+            req = urllib.request.Request(wiki_api, headers={'User-Agent': 'AutonomousResearcher/1.0'})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                titles, urls = data[1], data[3]
+                for t, u in zip(titles, urls):
+                    targets.append({"title": t, "url": u})
+        except Exception:
+            pass
 
     if not targets:
-        raise RuntimeError("No search results returned. Try rephrasing your search query.")
+        raise RuntimeError("Search providers are currently throttling cloud requests. Please rephrase or try another topic.")
 
     # 2. Extract article text via Playwright
     notes_vault = []

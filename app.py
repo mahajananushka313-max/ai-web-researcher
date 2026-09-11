@@ -26,7 +26,7 @@ st.set_page_config(page_title="Autonomous AI Web Researcher", page_icon="🔍", 
 st.title("🔍 Autonomous AI Web Researcher")
 st.caption("Live Search Indexing · Dynamic DOM Extraction · Gemini Synthesis")
 
-# Sidebar settings - Key field is empty with placeholder so GitHub will never block pushes
+# Sidebar settings
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input(
@@ -108,7 +108,7 @@ def perform_research(topic, num_articles, key):
         reader_tab.close()
         browser.close()
     
-    # 3. Gemini Synthesis (Passing key as query parameter for bound authorization keys)
+    # 3. Gemini Synthesis (Calling gemini-1.5-flash-latest via REST)
     status_text.info("Synthesizing grounded research brief with Gemini...")
     raw_research = ""
     for i, note in enumerate(notes_vault, 1):
@@ -126,9 +126,9 @@ def perform_research(topic, num_articles, key):
     3. **Source Reliability & Trust Check**
     """
 
-    # Pass key as the query parameter 'key=API_KEY'
+    # Pass key directly as URL query parameter using gemini-1.5-flash-latest
     encoded_key = urllib.parse.quote(key)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={encoded_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key={encoded_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}]
     }

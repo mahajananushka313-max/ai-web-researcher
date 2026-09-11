@@ -1,0 +1,5 @@
+streamlit
+markdown
+duckduckgo-search
+playwright
+google-generativeai

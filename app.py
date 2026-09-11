@@ -26,12 +26,12 @@ st.set_page_config(page_title="Autonomous AI Web Researcher", page_icon="🔍", 
 st.title("🔍 Autonomous AI Web Researcher")
 st.caption("Live Search Indexing · Dynamic DOM Extraction · Gemini Synthesis")
 
-# Sidebar settings
+# Sidebar settings - Key field is empty with placeholder so GitHub will never block pushes
 with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input(
         "Gemini API Key", 
-        value="AQ.Ab8RN6L49FbNHg_WVZkDg0yQI7fIniG9yuEpL3lQWlH92N84oA", 
+        placeholder="Paste your Gemini key here...", 
         type="password"
     )
     article_limit = st.slider("Sources to Scrape", min_value=3, max_value=8, value=5)
@@ -108,7 +108,7 @@ def perform_research(topic, num_articles, key):
         reader_tab.close()
         browser.close()
     
-    # 3. Gemini Synthesis (Supports both standard API keys and AQ tokens)
+    # 3. Gemini Synthesis (Passing key as query parameter for bound authorization keys)
     status_text.info("Synthesizing grounded research brief with Gemini...")
     raw_research = ""
     for i, note in enumerate(notes_vault, 1):
@@ -126,31 +126,30 @@ def perform_research(topic, num_articles, key):
     3. **Source Reliability & Trust Check**
     """
 
-    report_md = ""
-    if key.startswith("AQ."):
-        # Use direct REST API with Bearer token authentication
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}]
-        }
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {key}"
-        }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result_json = json.loads(resp.read().decode("utf-8"))
-                report_md = result_json["candidates"][0]["content"]["parts"][0]["text"]
-        except urllib.error.HTTPError as http_err:
-            err_msg = http_err.read().decode("utf-8")
-            raise RuntimeError(f"Gemini API Error ({http_err.code}): {err_msg}")
-    else:
-        # Standard SDK call for AIzaSy... keys
-        genai.configure(api_key=key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt)
-        report_md = response.text
+    # Pass key as the query parameter 'key=API_KEY'
+    encoded_key = urllib.parse.quote(key)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={encoded_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    req = urllib.request.Request(
+        url, 
+        data=json.dumps(payload).encode("utf-8"), 
+        headers=headers, 
+        method="POST"
+    )
+    
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result_json = json.loads(resp.read().decode("utf-8"))
+            report_md = result_json["candidates"][0]["content"]["parts"][0]["text"]
+    except urllib.error.HTTPError as http_err:
+        err_msg = http_err.read().decode("utf-8")
+        raise RuntimeError(f"Gemini API Error ({http_err.code}): {err_msg}")
     
     # 4. Generate Styled HTML & PDF
     html_body = markdown.markdown(report_md, extensions=["tables", "fenced_code"])
@@ -188,6 +187,8 @@ def perform_research(topic, num_articles, key):
 if run_button:
     if not query.strip():
         st.warning("Please provide a search topic.")
+    elif not api_key.strip():
+        st.warning("Please enter your Gemini API key in the left sidebar.")
     else:
         with st.spinner("Executing autonomous research pipeline..."):
             try:

@@ -31,7 +31,7 @@ with st.sidebar:
     st.header("Configuration")
     api_key = st.text_input(
         "Gemini API Key", 
-        value="AQ.Ab8RN6LQ_D-ToDy3yvYKgqhwXyy9s1Z1w3abAX4qVe76QyjC8Q", 
+        value="AQ.Ab8RN6L49FbNHg_WVZkDg0yQI7fIniG9yuEpL3lQWlH92N84oA", 
         type="password"
     )
     article_limit = st.slider("Sources to Scrape", min_value=3, max_value=8, value=5)
@@ -41,7 +41,7 @@ query = st.text_input("Enter a research topic:", placeholder="e.g., data science
 run_button = st.button("Run Deep Research", type="primary", use_container_width=True)
 
 def perform_research(topic, num_articles, key):
-    genai.configure(api_key=key)
+    key = key.strip()
     status_text = st.empty()
     status_text.info(f"Querying search index for: '{topic}'...")
     
@@ -108,7 +108,7 @@ def perform_research(topic, num_articles, key):
         reader_tab.close()
         browser.close()
     
-    # 3. Gemini Synthesis
+    # 3. Gemini Synthesis (Supports both standard API keys and AQ tokens)
     status_text.info("Synthesizing grounded research brief with Gemini...")
     raw_research = ""
     for i, note in enumerate(notes_vault, 1):
@@ -125,10 +125,32 @@ def perform_research(topic, num_articles, key):
     2. **Key Findings & Cross-Comparison**
     3. **Source Reliability & Trust Check**
     """
-    
-    model = genai.GenerativeModel("gemini-flash-latest")
-    response = model.generate_content(prompt)
-    report_md = response.text
+
+    report_md = ""
+    if key.startswith("AQ."):
+        # Use direct REST API with Bearer token authentication
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}"
+        }
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result_json = json.loads(resp.read().decode("utf-8"))
+                report_md = result_json["candidates"][0]["content"]["parts"][0]["text"]
+        except urllib.error.HTTPError as http_err:
+            err_msg = http_err.read().decode("utf-8")
+            raise RuntimeError(f"Gemini API Error ({http_err.code}): {err_msg}")
+    else:
+        # Standard SDK call for AIzaSy... keys
+        genai.configure(api_key=key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        report_md = response.text
     
     # 4. Generate Styled HTML & PDF
     html_body = markdown.markdown(report_md, extensions=["tables", "fenced_code"])

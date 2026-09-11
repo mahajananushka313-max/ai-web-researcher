@@ -26,14 +26,25 @@ st.set_page_config(page_title="Autonomous AI Web Researcher", page_icon="🔍", 
 st.title("🔍 Autonomous AI Web Researcher")
 st.caption("Live Search Indexing · Dynamic DOM Extraction · Gemini Synthesis")
 
+# Retrieve API key automatically from Streamlit Secrets or environment
+default_key = ""
+if "GEMINI_API_KEY" in st.secrets:
+    default_key = st.secrets["GEMINI_API_KEY"]
+elif os.getenv("GEMINI_API_KEY"):
+    default_key = os.getenv("GEMINI_API_KEY")
+
 # Sidebar settings
 with st.sidebar:
     st.header("Configuration")
-    api_key = st.text_input(
-        "Gemini API Key", 
-        placeholder="Paste your Gemini key here...", 
-        type="password"
-    )
+    if default_key:
+        st.success("API Key loaded from environment secrets")
+        api_key = default_key
+    else:
+        api_key = st.text_input(
+            "Gemini API Key", 
+            placeholder="Paste your Gemini key here...", 
+            type="password"
+        )
     article_limit = st.slider("Sources to Scrape", min_value=3, max_value=8, value=5)
 
 # Input topic
@@ -42,7 +53,6 @@ run_button = st.button("Run Deep Research", type="primary", use_container_width=
 
 def call_gemini_with_fallback(prompt, key, status_widget):
     encoded_key = urllib.parse.quote(key)
-    # Model fallback hierarchy
     candidate_models = [
         "gemini-3.6-flash",
         "gemini-2.5-flash",
@@ -68,7 +78,6 @@ def call_gemini_with_fallback(prompt, key, status_widget):
             method="POST"
         )
         
-        # Try up to 2 attempts per model for transient 503 spikes
         for attempt in range(2):
             try:
                 with urllib.request.urlopen(req, timeout=60) as resp:
@@ -211,7 +220,7 @@ if run_button:
     if not query.strip():
         st.warning("Please provide a search topic.")
     elif not api_key.strip():
-        st.warning("Please enter your Gemini API key in the left sidebar.")
+        st.warning("Please configure your Gemini API key in Streamlit Secrets or sidebar.")
     else:
         with st.spinner("Executing autonomous research pipeline..."):
             try:

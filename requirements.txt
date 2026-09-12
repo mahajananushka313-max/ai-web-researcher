@@ -1,5 +1,5 @@
 streamlit
-markdown
+reportlab
+beautifulsoup4
 duckduckgo-search
 playwright
-google-generativeai

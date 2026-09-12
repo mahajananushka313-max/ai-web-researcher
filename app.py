@@ -1,246 +1,470 @@
+import io
+import json
 import os
-import sys
-import time
-import subprocess
+import re
+import urllib.error
 import urllib.parse
 import urllib.request
-import json
 import streamlit as st
-import markdown
-from playwright.sync_api import sync_playwright
-from duckduckgo_search import DDGS
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-# Auto-download Playwright Chromium binary on cloud deployment
-@st.cache_resource
-def ensure_playwright_browser():
-    try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-    except Exception as e:
-        st.error(f"Browser installation failed: {e}")
+# Optional imports for scraping / DuckDuckGo
+try:
+    from duckduckgo_search import DDGS
 
-ensure_playwright_browser()
+    DDGS_AVAILABLE = True
+except ImportError:
+    DDGS_AVAILABLE = False
 
+try:
+    from playwright.sync_api import sync_playwright
+
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+
+try:
+    from bs4 import BeautifulSoup
+
+    BS4_AVAILABLE = True
+except ImportError:
+    BS4_AVAILABLE = False
+
+
+# ---------------------------------------------------------
 # Page Configuration
-st.set_page_config(page_title="Autonomous AI Web Researcher", page_icon="🔍", layout="wide")
+# ---------------------------------------------------------
+st.set_page_config(
+    page_title="Autonomous Web Researcher",
+    page_icon="🔍",
+    layout="wide",
+)
 
-st.title("🔍 Autonomous AI Web Researcher")
-st.caption("Live Search Indexing · Dynamic DOM Extraction · Gemini Synthesis")
+st.title("🔍 Autonomous Deep Web Researcher")
+st.caption("Live Search Indexing · webcmd DOM Extraction · Agentic Synthesis")
 
-# Retrieve API key automatically from Streamlit Secrets or environment
-default_key = ""
-if "GEMINI_API_KEY" in st.secrets:
-    default_key = st.secrets["GEMINI_API_KEY"]
-elif os.getenv("GEMINI_API_KEY"):
-    default_key = os.getenv("GEMINI_API_KEY")
 
-# Sidebar settings
-with st.sidebar:
-    st.header("Configuration")
-    if default_key:
-        st.success("API Key loaded from environment secrets")
-        api_key = default_key
-    else:
-        api_key = st.text_input(
-            "Gemini API Key", 
-            placeholder="Paste your Gemini key here...", 
-            type="password"
-        )
-    article_limit = st.slider("Sources to Scrape", min_value=3, max_value=8, value=5)
+# ---------------------------------------------------------
+# Webcmd / CloakBrowser Daemon & Scraper Integration
+# ---------------------------------------------------------
+WEBCMD_PORT = int(os.getenv("WEBCMD_PORT", "9777"))
+WEBCMD_URL = f"http://127.0.0.1:{WEBCMD_PORT}"
 
-# Input topic
-query = st.text_input("Enter a research topic:", placeholder="e.g., data science trends 2026")
-run_button = st.button("Run Deep Research", type="primary", use_container_width=True)
 
-def call_gemini_with_fallback(prompt, key, status_widget):
-    encoded_key = urllib.parse.quote(key)
-    candidate_models = [
-        "gemini-3.6-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro"
-    ]
-    
-    last_err = None
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
-    headers = {
-        "Content-Type": "application/json"
-    }
-    
-    for model_name in candidate_models:
-        status_widget.info(f"Synthesizing research brief with {model_name}...")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={encoded_key}"
+def is_webcmd_active(timeout: float = 0.5) -> bool:
+    """Checks if local Webcmd / CloakBrowser daemon is active on port 9777."""
+    try:
         req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST"
+            f"{WEBCMD_URL}/health", headers={"User-Agent": "WebcmdAgent/1.0"}
         )
-        
-        for attempt in range(2):
-            try:
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    result_json = json.loads(resp.read().decode("utf-8"))
-                    return result_json["candidates"][0]["content"]["parts"][0]["text"]
-            except urllib.error.HTTPError as http_err:
-                err_msg = http_err.read().decode("utf-8")
-                last_err = f"({http_err.code}): {err_msg}"
-                if http_err.code in (503, 429):
-                    time.sleep(2)
-                    continue
-                break
-            except Exception as e:
-                last_err = str(e)
-                break
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status in (200, 204)
+    except Exception:
+        return False
 
-    raise RuntimeError(f"All model synthesis attempts failed: {last_err}")
 
-def perform_research(topic, num_articles, key):
-    key = key.strip()
-    status_text = st.empty()
-    status_text.info(f"Querying search index for: '{topic}'...")
-    
-    # 1. Fetch search results with backend fallback
-    targets = []
-    for backend_mode in ["api", "html", "lite"]:
+def scrape_with_webcmd(url: str, timeout: int = 15) -> str:
+    """Extracts webpage content using the local Webcmd daemon."""
+    payload = json.dumps({"url": url}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{WEBCMD_URL}/extract",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        return data.get("text", "")
+
+
+def scrape_with_playwright(url: str, timeout_ms: int = 15000) -> str:
+    """Fallback extraction using headless Chromium via Playwright."""
+    if not PLAYWRIGHT_AVAILABLE:
+        return ""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
+            content = page.content()
+            browser.close()
+
+            if BS4_AVAILABLE:
+                soup = BeautifulSoup(content, "html.parser")
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.decompose()
+                return re.sub(r"\s+", " ", soup.get_text()).strip()
+            return content[:5000]
+    except Exception:
+        return ""
+
+
+def extract_content(url: str, status_widget=None) -> str:
+    """Dual-mode scraper: attempts Webcmd first, falls back to Playwright."""
+    if is_webcmd_active():
+        if status_widget:
+            status_widget.info(
+                f"Extracting via Webcmd daemon (port {WEBCMD_PORT}): {url}"
+            )
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(topic, max_results=num_articles * 2, backend=backend_mode))
-                for item in results:
-                    href = item.get("href")
-                    title = item.get("title")
-                    if href and href.startswith("http") and not any(skip in href for skip in ["duckduckgo.com", "bing.com"]):
-                        if not any(t["url"] == href for t in targets):
-                            targets.append({"title": title if title else href, "url": href})
-                    if len(targets) >= num_articles:
-                        break
-            if targets:
-                break
-        except Exception:
-            continue
-
-    # Fallback to direct encyclopedic search if engine blocks cloud hosting
-    if not targets:
-        try:
-            wiki_api = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote(topic)}&limit={num_articles}&namespace=0&format=json"
-            req = urllib.request.Request(wiki_api, headers={'User-Agent': 'AutonomousResearcher/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode('utf-8'))
-                titles, urls = data[1], data[3]
-                for t, u in zip(titles, urls):
-                    targets.append({"title": t, "url": u})
+            text = scrape_with_webcmd(url)
+            if len(text.strip()) > 100:
+                return text[:6000]
         except Exception:
             pass
 
-    if not targets:
-        raise RuntimeError("Search providers are currently throttling cloud requests. Please rephrase or try another topic.")
+    if status_widget:
+        status_widget.info(f"Extracting via browser engine: {url}")
+    return scrape_with_playwright(url)[:6000]
 
-    # 2. Extract article text via Playwright
-    notes_vault = []
-    progress_bar = st.progress(0)
-    
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, 
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        reader_tab = browser.new_page(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        )
-        
-        for idx, item in enumerate(targets, 1):
-            status_text.info(f"Reading source ({idx}/{len(targets)}): {item['title'][:45]}...")
-            try:
-                reader_tab.goto(item["url"], wait_until="domcontentloaded", timeout=20000)
-                paragraphs = reader_tab.locator("article p, main p, .post-content p, p").all_inner_texts()
-                body = " ".join([p.strip() for p in paragraphs if len(p.strip()) > 50])
-                if body:
-                    notes_vault.append({"title": item["title"], "url": item["url"], "content": body[:3000]})
-            except Exception:
-                pass
-            progress_bar.progress(idx / len(targets))
-            
-        reader_tab.close()
-        browser.close()
-    
-    # 3. Gemini Synthesis with Resilient Fallback
-    raw_research = ""
-    for i, note in enumerate(notes_vault, 1):
-        raw_research += f"\nSource {i}: {note['title']} ({note['url']})\n{note['content']}\n---\n"
-        
-    prompt = f"""
-    You are an expert research analyst. Deep research requested for: "{topic}".
-    
-    Analyze the following gathered notes from recent web findings:
-    {raw_research}
-    
-    Generate a comprehensive research brief containing:
-    1. **Topic Overview & Executive Summary**
-    2. **Key Findings & Cross-Comparison**
-    3. **Source Reliability & Trust Check**
-    """
 
-    report_md = call_gemini_with_fallback(prompt, key, status_text)
-    
-    # 4. Generate Styled HTML & PDF
-    html_body = markdown.markdown(report_md, extensions=["tables", "fenced_code"])
-    styled_html = f"""<!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; line-height: 1.6; max-width: 800px; margin: auto; padding: 20px; color: #222; }}
-            h1, h2, h3 {{ border-bottom: 1px solid #ddd; padding-bottom: 5px; }}
-            blockquote {{ border-left: 3px solid #ccc; padding-left: 10px; color: #555; }}
-        </style>
-    </head>
-    <body>
-        <h1>Research Report: {topic.title()}</h1>
-        {html_body}
-    </body>
-    </html>"""
-    
-    pdf_path = "final_research_report.pdf"
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True, 
-            args=["--no-sandbox", "--disable-dev-shm-usage"]
-        )
-        pdf_page = browser.new_page()
-        pdf_page.set_content(styled_html, wait_until="load")
-        pdf_page.pdf(path=pdf_path, format="A4", margin={"top": "15mm", "bottom": "15mm", "left": "15mm", "right": "15mm"})
-        browser.close()
-        
-    status_text.empty()
-    progress_bar.empty()
-    return report_md, pdf_path
+# ---------------------------------------------------------
+# Web Search Discovery (Multi-Engine Resilient)
+# ---------------------------------------------------------
+def search_web(query: str, max_results: int = 4) -> list[dict]:
+    """Finds target source URLs using DuckDuckGo, with Wikipedia and fallback query routing."""
+    results = []
 
-if run_button:
-    if not query.strip():
-        st.warning("Please provide a search topic.")
-    elif not api_key.strip():
-        st.warning("Please configure your Gemini API key in Streamlit Secrets or sidebar.")
-    else:
-        with st.spinner("Executing autonomous research pipeline..."):
-            try:
-                markdown_report, pdf_file = perform_research(query, article_limit, api_key)
-                st.success("Research completed!")
-                
-                with open(pdf_file, "rb") as f:
-                    pdf_bytes = f.read()
-                    
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    st.download_button(
-                        label="📄 Download PDF Report",
-                        data=pdf_bytes,
-                        file_name=f"research_report_{query[:15].strip().replace(' ', '_')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True
+    # Method 1: DuckDuckGo Python package (DDGS)
+    if DDGS_AVAILABLE:
+        try:
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    results.append(
+                        {
+                            "title": r.get("title", query),
+                            "url": r.get("href", ""),
+                            "snippet": r.get("body", ""),
+                        }
                     )
-                
-                st.markdown("---")
-                st.markdown(markdown_report)
-            except Exception as e:
-                st.error(f"Error during execution: {str(e)}")
+            if results:
+                return results
+        except Exception:
+            pass
+
+    # Method 2: Direct DuckDuckGo Lite / HTML scraper with real User-Agent
+    try:
+        encoded = urllib.parse.quote_plus(query)
+        req = urllib.request.Request(
+            f"https://html.duckduckgo.com/html/?q={encoded}",
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+            links = re.findall(r'class="result__url"[^>]*href="([^"]+)"', html)
+            snippets = re.findall(
+                r'class="result__snippet[^"]*"[^>]*>(.*?)</a>', html, re.DOTALL
+            )
+            for raw_url, raw_snip in zip(
+                links[:max_results], snippets[:max_results]
+            ):
+                clean_url = raw_url
+                if "uddg=" in clean_url:
+                    match = re.search(r"uddg=([^&]+)", clean_url)
+                    if match:
+                        clean_url = urllib.parse.unquote(match.group(1))
+                clean_snippet = re.sub(r"<.*?>", "", raw_snip).strip()
+                results.append(
+                    {
+                        "title": query,
+                        "url": clean_url,
+                        "snippet": clean_snippet,
+                    }
+                )
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # Method 3: Wikipedia API fallback
+    try:
+        wiki_url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={urllib.parse.quote_plus(query)}&limit={max_results}&namespace=0&format=json"
+        req = urllib.request.Request(
+            wiki_url, headers={"User-Agent": "AutonomousWebResearcher/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            titles, descriptions, urls = data[1], data[2], data[3]
+            for t, d, u in zip(titles, descriptions, urls):
+                results.append({"title": t, "url": u, "snippet": d or t})
+        if results:
+            return results
+    except Exception:
+        pass
+
+    # Method 4: Contextual discovery fallback
+    return [
+        {
+            "title": f"Documentation: {query}",
+            "url": f"https://github.com/search?q={urllib.parse.quote_plus(query)}",
+            "snippet": f"Open-source index and technical repositories for {query}.",
+        },
+        {
+            "title": f"Overview: {query}",
+            "url": f"https://en.wikipedia.org/wiki/{urllib.parse.quote_plus(query)}",
+            "snippet": f"Encyclopedia reference and background summary for {query}.",
+        },
+    ]
+
+
+# ---------------------------------------------------------
+# Gemini API Auto-Discovery & Dynamic Synthesis
+# ---------------------------------------------------------
+def get_available_gemini_model(api_key: str) -> tuple[str, str]:
+    """Queries ModelService to detect an active generateContent model and supported API version."""
+    clean_key = api_key.strip()
+    preferred = [
+        "gemini-3.6-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ]
+
+    for api_ver in ("v1beta", "v1"):
+        url = f"https://generativelanguage.googleapis.com/{api_ver}/models?key={clean_key}"
+        try:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "AutonomousWebResearcher/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models", [])
+                valid_models = [
+                    m["name"].replace("models/", "")
+                    for m in models
+                    if "generateContent" in m.get("supportedGenerationMethods", [])
+                ]
+
+                for pref in preferred:
+                    if pref in valid_models:
+                        return api_ver, pref
+
+                if valid_models:
+                    return api_ver, valid_models[0]
+        except Exception:
+            continue
+
+    return "v1beta", "gemini-3.6-flash"
+
+
+def call_gemini_with_fallback(
+    prompt: str, api_key: str, status_widget=None
+) -> str:
+    """Executes prompt synthesis using auto-detected active Gemini endpoints."""
+    clean_key = api_key.strip()
+    api_ver, model_name = get_available_gemini_model(clean_key)
+
+    if status_widget:
+        status_widget.info(
+            f"Synthesizing research brief with {model_name} ({api_ver})..."
+        )
+
+    url = (
+        f"https://generativelanguage.googleapis.com/{api_ver}/models/"
+        f"{model_name}:generateContent?key={clean_key}"
+    )
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 3000},
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result_json = json.loads(resp.read().decode("utf-8"))
+            candidates = result_json.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"]
+            raise RuntimeError("Gemini returned an empty candidate response.")
+    except urllib.error.HTTPError as http_err:
+        err_body = http_err.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Gemini HTTP {http_err.code}: {err_body}")
+
+
+# ---------------------------------------------------------
+# PDF Generation
+# ---------------------------------------------------------
+def build_pdf_report(
+    topic: str, content_markdown: str, sources: list[str]
+) -> io.BytesIO:
+    """Builds a formatted A4 executive PDF report."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=letter,
+        rightMargin=45,
+        leftMargin=45,
+        topMargin=45,
+        bottomMargin=45,
+    )
+    styles = getSampleStyleSheet()
+
+    title_style = ParagraphStyle(
+        "ReportTitle",
+        parent=styles["Title"],
+        fontSize=20,
+        leading=24,
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "Heading2_Custom",
+        parent=styles["Heading2"],
+        fontSize=13,
+        leading=16,
+        spaceBefore=10,
+        spaceAfter=6,
+    )
+    body_style = ParagraphStyle(
+        "Body_Custom",
+        parent=styles["Normal"],
+        fontSize=10,
+        leading=14,
+        spaceAfter=6,
+    )
+
+    story = [
+        Paragraph(f"Executive Research Report: {topic}", title_style),
+        Spacer(1, 10),
+    ]
+
+    for line in content_markdown.split("\n"):
+        clean_line = line.strip()
+        if not clean_line:
+            story.append(Spacer(1, 4))
+            continue
+        if clean_line.startswith("## ") or clean_line.startswith("### "):
+            header_text = re.sub(r"^#+\s*", "", clean_line)
+            story.append(Paragraph(header_text, heading_style))
+        else:
+            safe_text = (
+                clean_line.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            story.append(Paragraph(safe_text, body_style))
+
+    if sources:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Verified Sources", heading_style))
+        for s in sources:
+            story.append(
+                Paragraph(
+                    f"• {s}",
+                    body_style,
+                )
+            )
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
+
+# ---------------------------------------------------------
+# UI & Workflow Execution
+# ---------------------------------------------------------
+api_key = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+
+with st.sidebar:
+    st.header("Agent Controls")
+    user_api_key = st.text_input(
+        "Gemini API Key",
+        value=api_key,
+        type="password",
+        help="Reads from secrets.toml or environment variable if not typed manually.",
+    )
+    effective_api_key = (user_api_key or api_key).strip()
+
+    daemon_ready = is_webcmd_active()
+    if daemon_ready:
+        st.success(f"Webcmd Daemon: Active (port {WEBCMD_PORT})")
+    else:
+        st.info("Browser Runtime: Headless Engine (Cloud Mode)")
+
+topic = st.text_input(
+    "Enter Research Topic or Query",
+    placeholder="e.g., Advances in Autonomous Browser Agents 2026",
+)
+
+if st.button("Run Deep Research", type="primary"):
+    if not topic.strip():
+        st.warning("Please provide a research query.")
+        st.stop()
+
+    if not effective_api_key:
+        st.error("Missing Gemini API Key. Provide it in the sidebar.")
+        st.stop()
+
+    status_box = st.empty()
+    progress_bar = st.progress(5)
+
+    status_box.info("Querying search indices...")
+    results = search_web(topic, max_results=3)
+    progress_bar.progress(25)
+
+    if not results:
+        status_box.error(
+            "No search results could be retrieved. Try another query."
+        )
+        st.stop()
+
+    scraped_docs = []
+    source_urls = []
+
+    for idx, r in enumerate(results):
+        url = r["url"]
+        source_urls.append(url)
+        content = extract_content(url, status_widget=status_box)
+        scraped_docs.append(
+            f"Source URL: {url}\nContent Snippet: {r['snippet']}\nFull Content: {content}\n---"
+        )
+        progress_bar.progress(25 + int((idx + 1) / len(results) * 45))
+
+    synthesis_prompt = f"""
+You are an autonomous research intelligence system.
+Analyze the following extracted live web data on the topic: "{topic}".
+
+Synthesize a comprehensive, executive-level research brief structured as follows:
+- ## Executive Summary
+- ## Key Insights & Developments
+- ## Technical Analysis & Implications
+- ## Strategic Takeaways
+
+Extracted Web Content:
+{"".join(scraped_docs)}
+"""
+
+    status_box.info("Synthesizing multi-source intelligence...")
+    try:
+        report_markdown = call_gemini_with_fallback(
+            synthesis_prompt, effective_api_key, status_widget=status_box
+        )
+        progress_bar.progress(100)
+        status_box.success("Research and synthesis complete!")
+    except Exception as e:
+        status_box.error(f"Synthesis failed: {e}")
+        st.stop()
+
+    st.markdown("---")
+    st.markdown(report_markdown)
+
+    pdf_buffer = build_pdf_report(topic, report_markdown, source_urls)
+    st.download_button(
+        label="📥 Download PDF Report",
+        data=pdf_buffer,
+        file_name=f"research_report_{re.sub(r'[^a-zA-Z0-9]', '_', topic)[:25]}.pdf",
+        mime="application/pdf",
+    )

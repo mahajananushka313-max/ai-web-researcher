@@ -31,3 +31,4 @@ desktop.ini
 # IDE & Editor Settings
 .vscode/
 .idea/
+.streamlit/secrets.toml

@@ -1,4 +1,5 @@
 streamlit
+google-generativeai
 reportlab
 beautifulsoup4
 duckduckgo-search
